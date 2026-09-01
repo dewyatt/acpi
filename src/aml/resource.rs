@@ -118,8 +118,8 @@ fn resource_descriptor(bytes: &[u8]) -> Result<(Option<Resource>, &[u8]), AmlErr
             0x08 => address_space_descriptor::<u16>(descriptor_bytes),
             0x09 => extended_interrupt_descriptor(descriptor_bytes),
             0x0a => address_space_descriptor::<u64>(descriptor_bytes),
-            0x0e => serial_bus_descriptor(descriptor_bytes),
             0x0c => gpio_connection_descriptor(descriptor_bytes),
+            0x0e => serial_bus_descriptor(descriptor_bytes),
 
             0x00 | 0x13..=0x7f => Err(AmlError::InvalidResourceDescriptor),
             0x80..=0xff => unreachable!(),
