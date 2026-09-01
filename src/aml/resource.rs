@@ -14,6 +14,7 @@ pub enum Resource {
     IOPort(IOPortDescriptor),
     Dma(DMADescriptor),
     SerialBus(SerialBusDescriptor),
+    GPIO(GPIOConnectionDescriptor),
 }
 
 const UNSUPPORTED_LARGE_RESOURCE_DESCRIPTORS: &[(u8, &str)] = &[
@@ -23,7 +24,6 @@ const UNSUPPORTED_LARGE_RESOURCE_DESCRIPTORS: &[(u8, &str)] = &[
     (0x04, "Vendor-defined Descriptor"),
     (0x05, "32-bit Memory Range Descriptor"),
     (0x0b, "Extended Address Space Descriptor"),
-    (0x0c, "GPIO Connection Descriptor"),
     (0x0d, "Pin Function Descriptor"),
     (0x0f, "Pin Configuration Descriptor"),
     (0x10, "Pin Group Descriptor"),
@@ -119,6 +119,7 @@ fn resource_descriptor(bytes: &[u8]) -> Result<(Option<Resource>, &[u8]), AmlErr
             0x09 => extended_interrupt_descriptor(descriptor_bytes),
             0x0a => address_space_descriptor::<u64>(descriptor_bytes),
             0x0e => serial_bus_descriptor(descriptor_bytes),
+            0x0c => gpio_connection_descriptor(descriptor_bytes),
 
             0x00 | 0x13..=0x7f => Err(AmlError::InvalidResourceDescriptor),
             0x80..=0xff => unreachable!(),
@@ -699,6 +700,122 @@ fn serial_bus_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
         source: alloc::string::String::from(source),
         vendor_data: Vec::from(vendor_data),
         bus: descriptor,
+    }))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum GPIOInterruptPolarity {
+    ActiveHigh,
+    ActiveLow,
+    ActiveBoth,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum WakeCapability {
+    NotWakeCapable,
+    WakeCapable,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum IORestriction {
+    None,
+    InputOnly,
+    OutputOnly,
+    NoneAndPreserve,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PinConfiguration {
+    Default,
+    PullUp,
+    PullDown,
+    NoPull,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct GPIOConnectionDescriptor {
+    pub usage: ResourceUsage,
+    pub sharing: ShareType,
+    pub pin_configuration: PinConfiguration,
+    pub output_drive_strength: u16,
+    pub debounce_timeout: u16,
+    pub pins: Vec<u16>,
+    pub source: crate::aml::String,
+    pub vendor_data: Vec<u8>,
+    pub connection: GPIOConnection,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum GPIOConnection {
+    Interrupt { trigger: InterruptTrigger, wake_capability: WakeCapability, polarity: GPIOInterruptPolarity },
+    IO { io_restriction: IORestriction },
+}
+
+fn gpio_connection_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
+    // revision
+    if bytes[3] != 1 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let pin_table_offset = LittleEndian::read_u16(&bytes[14..=15]) as usize;
+    let source_name_offset = LittleEndian::read_u16(&bytes[17..=18]) as usize;
+    let vendor_data_offset = LittleEndian::read_u16(&bytes[19..=20]) as usize;
+    let vendor_data_length = LittleEndian::read_u16(&bytes[21..=22]) as usize;
+
+    let pin_count = ((source_name_offset - pin_table_offset) / 2) as usize;
+    let vendor_data = &bytes[vendor_data_offset..vendor_data_offset + vendor_data_length];
+    let source = str::from_utf8(&bytes[source_name_offset..bytes.len() - vendor_data_length - 1])
+        .map_err(|_| AmlError::InvalidResourceDescriptor)?;
+
+    Ok(Resource::GPIO(GPIOConnectionDescriptor {
+        usage: if bytes[5].get_bit(0) { ResourceUsage::ResourceConsumer } else { ResourceUsage::ResourceProducer },
+        sharing: if bytes[7].get_bit(3) { ShareType::Shared } else { ShareType::Exclusive },
+        pin_configuration: match bytes[9] {
+            0x00 => PinConfiguration::Default,
+            0x01 => PinConfiguration::PullUp,
+            0x02 => PinConfiguration::PullDown,
+            0x03 => PinConfiguration::NoPull,
+            _ => {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+        },
+        output_drive_strength: LittleEndian::read_u16(&bytes[10..=11]),
+        debounce_timeout: LittleEndian::read_u16(&bytes[12..=13]),
+        pins: bytes[pin_table_offset..pin_table_offset + 2 * (pin_count)]
+            .chunks(2)
+            .map(|b| LittleEndian::read_u16(&[b[0], b[1]]))
+            .collect::<Vec<u16>>(),
+        source: alloc::string::String::from(source),
+        vendor_data: Vec::from(vendor_data),
+        connection: match bytes[4] {
+            0 => GPIOConnection::Interrupt {
+                trigger: match bytes[7].get_bit(0) {
+                    true => InterruptTrigger::Edge,
+                    false => InterruptTrigger::Level,
+                },
+                wake_capability: match bytes[7].get_bit(4) {
+                    true => WakeCapability::WakeCapable,
+                    false => WakeCapability::NotWakeCapable,
+                },
+                polarity: match bytes[7].get_bits(1..=2) {
+                    0x0 => GPIOInterruptPolarity::ActiveHigh,
+                    0x1 => GPIOInterruptPolarity::ActiveLow,
+                    0x2 => GPIOInterruptPolarity::ActiveBoth,
+                    _ => return Err(AmlError::InvalidResourceDescriptor),
+                },
+            },
+            1 => GPIOConnection::IO {
+                io_restriction: match bytes[7].get_bits(0..=1) {
+                    0b00 => IORestriction::None,
+                    0b01 => IORestriction::InputOnly,
+                    0b10 => IORestriction::OutputOnly,
+                    0b11 => IORestriction::NoneAndPreserve,
+                    _ => unreachable!(),
+                },
+            },
+            _ => {
+                return Err(AmlError::InvalidResourceDescriptor);
+            }
+        },
     }))
 }
 
