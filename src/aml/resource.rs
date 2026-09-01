@@ -13,6 +13,7 @@ pub enum Resource {
     MemoryRange(MemoryRangeDescriptor),
     IOPort(IOPortDescriptor),
     Dma(DMADescriptor),
+    SerialBus(SerialBusDescriptor),
 }
 
 const UNSUPPORTED_LARGE_RESOURCE_DESCRIPTORS: &[(u8, &str)] = &[
@@ -24,7 +25,6 @@ const UNSUPPORTED_LARGE_RESOURCE_DESCRIPTORS: &[(u8, &str)] = &[
     (0x0b, "Extended Address Space Descriptor"),
     (0x0c, "GPIO Connection Descriptor"),
     (0x0d, "Pin Function Descriptor"),
-    (0x0e, "GenericSerialBus Connection Descriptor"),
     (0x0f, "Pin Configuration Descriptor"),
     (0x10, "Pin Group Descriptor"),
     (0x11, "Pin Group Function Descriptor"),
@@ -118,6 +118,7 @@ fn resource_descriptor(bytes: &[u8]) -> Result<(Option<Resource>, &[u8]), AmlErr
             0x08 => address_space_descriptor::<u16>(descriptor_bytes),
             0x09 => extended_interrupt_descriptor(descriptor_bytes),
             0x0a => address_space_descriptor::<u64>(descriptor_bytes),
+            0x0e => serial_bus_descriptor(descriptor_bytes),
 
             0x00 | 0x13..=0x7f => Err(AmlError::InvalidResourceDescriptor),
             0x80..=0xff => unreachable!(),
@@ -606,6 +607,101 @@ fn extended_interrupt_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
     }))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ShareType {
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResourceUsage {
+    ResourceConsumer,
+    ResourceProducer,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SlaveMode {
+    ControllerInitiated,
+    DeviceInitiated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AddressingMode {
+    AddressingMode7Bit,
+    AddressingMode10Bit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct SerialBusDescriptor {
+    pub sharing: ShareType,
+    pub usage: ResourceUsage,
+    pub slave_mode: SlaveMode,
+    pub source: crate::aml::String,
+    pub source_index: u8,
+    pub vendor_data: Vec<u8>,
+    pub bus: SerialBus,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SerialBus {
+    I2C { addressing_mode: AddressingMode, speed: u32, address: u16 },
+}
+
+fn i2c_bus_descriptor(bytes: &[u8]) -> Result<(SerialBus, (usize, usize)), AmlError> {
+    if bytes.len() < 18 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    // revision
+    if bytes[9] > 2 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let type_length = LittleEndian::read_u16(&bytes[10..=11]) as usize;
+    if type_length < 6 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let speed = LittleEndian::read_u32(&bytes[12..=15]);
+    let address = LittleEndian::read_u16(&bytes[16..=17]);
+    Ok((
+        SerialBus::I2C {
+            addressing_mode: if bytes[7].get_bit(0) {
+                AddressingMode::AddressingMode10Bit
+            } else {
+                AddressingMode::AddressingMode7Bit
+            },
+            speed,
+            address,
+        },
+        (18, type_length - 6),
+    ))
+}
+
+fn serial_bus_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
+    if bytes.len() < 7 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    // revision
+    if bytes[3] > 2 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
+    let (descriptor, (vendor_data_idx, vendor_data_length)) = match bytes[5] {
+        1 => i2c_bus_descriptor(bytes)?,
+        _ => return Err(AmlError::LibUnimplemented),
+    };
+    let vendor_data = &bytes[vendor_data_idx..vendor_data_idx + vendor_data_length];
+    let source = str::from_utf8(&bytes[vendor_data_idx + vendor_data_length..bytes.len() - 1])
+        .map_err(|_| AmlError::InvalidResourceDescriptor)?;
+
+    Ok(Resource::SerialBus(SerialBusDescriptor {
+        sharing: if bytes[6].get_bit(2) { ShareType::Shared } else { ShareType::Exclusive },
+        usage: if bytes[6].get_bit(1) { ResourceUsage::ResourceConsumer } else { ResourceUsage::ResourceProducer },
+        slave_mode: if bytes[6].get_bit(0) { SlaveMode::DeviceInitiated } else { SlaveMode::ControllerInitiated },
+        source_index: bytes[4],
+        source: alloc::string::String::from(source),
+        vendor_data: Vec::from(vendor_data),
+        bus: descriptor,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,7 +917,7 @@ mod tests {
     #[test]
     fn skips_unsupported_large_resource_descriptors() {
         let bytes: Vec<u8> = [
-            0x8e, 0x01, 0x00, 0x00, // GenericSerialBus descriptor with one byte of payload.
+            0x82, 0x01, 0x00, 0x00, // Generic Register descriptor with one byte of payload.
             0x86, 0x09, 0x00, 0x01, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x00,
             0x00, // Memory32Fixed(ReadWrite, 0x1000, 0x1000)
             0x79, 0x00, // End tag.
