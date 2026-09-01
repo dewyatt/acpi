@@ -637,7 +637,7 @@ pub struct SerialBusDescriptor {
     pub sharing: ShareType,
     pub usage: ResourceUsage,
     pub slave_mode: SlaveMode,
-    pub source: crate::aml::String,
+    pub source: alloc::string::String,
     pub source_index: u8,
     pub vendor_data: Vec<u8>,
     pub bus: SerialBus,
