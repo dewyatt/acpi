@@ -752,6 +752,9 @@ pub enum GPIOConnection {
 }
 
 fn gpio_connection_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
+    if bytes.len() < 23 {
+        return Err(AmlError::InvalidResourceDescriptor);
+    }
     // revision
     if bytes[3] != 1 {
         return Err(AmlError::InvalidResourceDescriptor);
