@@ -677,7 +677,7 @@ fn i2c_bus_descriptor(bytes: &[u8]) -> Result<(SerialBus, (usize, usize)), AmlEr
 }
 
 fn serial_bus_descriptor(bytes: &[u8]) -> Result<Resource, AmlError> {
-    if bytes.len() < 7 {
+    if bytes.len() < 12 {
         return Err(AmlError::InvalidResourceDescriptor);
     }
     // revision
