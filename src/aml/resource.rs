@@ -653,7 +653,7 @@ fn i2c_bus_descriptor(bytes: &[u8]) -> Result<(SerialBus, (usize, usize)), AmlEr
         return Err(AmlError::InvalidResourceDescriptor);
     }
     // revision
-    if bytes[9] > 2 {
+    if bytes[9] > 1 {
         return Err(AmlError::InvalidResourceDescriptor);
     }
     let type_length = LittleEndian::read_u16(&bytes[10..=11]) as usize;
